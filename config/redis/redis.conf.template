@@ -1,0 +1,40 @@
+# Network
+bind 0.0.0.0
+port 6379
+protected-mode yes
+
+# Security
+requirepass ${REDIS_PASSWORD}
+
+# Persistence
+save 900 1
+save 300 10
+save 60 10000
+stop-writes-on-bgsave-error yes
+rdbcompression yes
+rdbchecksum yes
+dbfilename dump.rdb
+dir /data
+
+# Logging
+loglevel notice
+logfile ""
+
+# Memory Management
+maxmemory 256mb
+maxmemory-policy allkeys-lru
+
+# Performance
+tcp-backlog 511
+timeout 0
+tcp-keepalive 300
+
+# Disable dangerous commands
+rename-command FLUSHDB ""
+rename-command FLUSHALL ""
+rename-command KEYS ""
+rename-command CONFIG "CONFIG_${REDIS_PASSWORD}"
+rename-command SHUTDOWN "SHUTDOWN_${REDIS_PASSWORD}"
+
+# Limits
+maxclients 10000

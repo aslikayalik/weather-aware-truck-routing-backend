@@ -1,0 +1,26 @@
+# Python
+*.py[cod]
+__pycache__/
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Env & virtualenv
+.env
+.venv
+venv/
+
+# Runtime / generated
+*.log
+web/static/
+web/media/
+web/profile_images/
+celerybeat-schedule*
+celerybeat.pid
+volumes/
+.docker/
+
+# IDE / OS
+.idea/
+.DS_Store
+Thumbs.db
