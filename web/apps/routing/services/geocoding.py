@@ -34,7 +34,7 @@ def _label(props: dict) -> str:
 
 def search_places(query: str) -> list[dict]:
     query = query.strip()
-    cache_key = "geocode:v2:" + hashlib.sha256(query.lower().encode()).hexdigest()
+    cache_key = "geocode:v3:" + hashlib.sha256(query.lower().encode()).hexdigest()
     cached = cache.get(cache_key)
     if cached is not None:
         return cached

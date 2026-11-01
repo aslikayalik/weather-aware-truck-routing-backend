@@ -53,8 +53,13 @@ class TripPlanView(APIView):
                 status=status.HTTP_503_SERVICE_UNAVAILABLE,
             )
         except NoRouteFound as exc:
+            logger.info("No route found: %s", exc)
             return Response(
-                {"detail": f"No truck route found: {exc}"},
+                {
+                    "detail": "No drivable route was found between these places. "
+                    "Check that both can be reached by road from each other "
+                    "(for example, that they are on the same continent)."
+                },
                 status=status.HTTP_422_UNPROCESSABLE_ENTITY,
             )
         except (RoutingError, WeatherError) as exc:

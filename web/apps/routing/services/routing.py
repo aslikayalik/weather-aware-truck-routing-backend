@@ -39,6 +39,9 @@ CACHE_TTL_SECONDS = 60 * 60
 REQUEST_TIMEOUT_SECONDS = 30
 # Valhalla shapes have a vertex every few metres; ~10 m tolerance keeps them faithful.
 STORE_TOLERANCE_DEG = 0.0001
+# A route whose ends are farther than this from the requested points was snapped to
+# an unrelated part of the road network (e.g. across an ocean) and is discarded.
+MAX_ENDPOINT_SNAP_MILES = 25.0
 
 
 class RoutingError(Exception):
@@ -291,11 +294,21 @@ def _fill_with_detours(
         if len(routes) >= ROUTE_COUNT:
             break
         if (
-            candidate.duration_seconds <= fastest.duration_seconds * MAX_DURATION_RATIO
+            _reaches(candidate, origin, destination)
+            and candidate.duration_seconds
+            <= fastest.duration_seconds * MAX_DURATION_RATIO
             and _is_distinct(candidate, routes)
         ):
             routes.append(candidate)
     return routes
+
+
+def _reaches(route: Route, origin: LatLon, destination: LatLon) -> bool:
+    return (
+        geo.haversine_miles(route.coords[0], origin) <= MAX_ENDPOINT_SNAP_MILES
+        and geo.haversine_miles(route.coords[-1], destination)
+        <= MAX_ENDPOINT_SNAP_MILES
+    )
 
 
 def _dedupe(routes: list[Route]) -> list[Route]:
@@ -330,6 +343,9 @@ def get_route_options(
             logger.warning("Routing provider %s failed: %s", provider.name, exc)
             last_error = exc
             continue
+        routes = [route for route in routes if _reaches(route, origin, destination)]
+        if not routes:
+            raise NoRouteFound("no road connection between the selected places")
         if len(routes) < ROUTE_COUNT:
             routes = _fill_with_detours(provider, routes, origin, destination, load_lb)
         routes = sorted(routes, key=lambda r: r.duration_seconds)[:ROUTE_COUNT]
