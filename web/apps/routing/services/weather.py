@@ -1,13 +1,20 @@
-"""Hourly forecasts from Open-Meteo.
+"""Hourly forecasts from Open-Meteo, with MET Norway as a fallback.
 
 Every lookup is snapped to a 0.2 degree cell (~14 x 10 miles), close to the
 resolution of the global models behind the forecast. Snapping lets the three routes
-and the heatmap share cached forecasts, which matters because the free API allows
-600 locations per minute. Cells are fetched in batches of up to 100 locations.
+and the heatmap share cached forecasts, which matters because the free Open-Meteo
+API allows 600 locations per minute per IP. Cells are fetched in batches of up to
+100 locations.
+
+Open-Meteo counts its quota per IP address, and hosting platforms share outbound
+IPs between many customers, so the quota can be exhausted by others. When
+Open-Meteo refuses a batch, those cells are fetched from MET Norway instead (one
+request per cell) and Open-Meteo is skipped until its quota window resets.
 """
 
 import logging
 import math
+import time
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from datetime import datetime
@@ -29,6 +36,19 @@ REQUEST_TIMEOUT_SECONDS = 30
 HOURLY_VARIABLES = ("wind_speed_10m", "wind_gusts_10m", "rain", "showers", "snowfall")
 HOUR = 3600
 
+# After a 429, skip Open-Meteo for the rest of its quota window.
+OPEN_METEO_BLOCK_KEY = "wx:open-meteo:blocked"
+OPEN_METEO_BLOCK_SECONDS = {"minutely": 60, "hourly": 60 * 60, "daily": 60 * 60}
+
+# MET Norway asks clients to stay below 20 requests per second.
+MET_WORKERS = 8
+MPS_TO_MPH = 2.23694
+MM_PER_INCH = 25.4
+# MET Norway reports precipitation as liquid water and has no separate snowfall
+# field; at or below freezing it is treated as snow at a 10:1 snow-to-water ratio.
+SNOW_MAX_TEMP_C = 0.5
+SNOW_TO_LIQUID_RATIO = 10
+
 Cell = tuple[float, float]
 
 
@@ -38,6 +58,10 @@ class WeatherError(Exception):
 
 class WeatherRateLimited(WeatherError):
     """The provider's per-minute/hour location quota is exhausted."""
+
+    def __init__(self, message: str, retry_after_seconds: int = 60):
+        super().__init__(message)
+        self.retry_after_seconds = retry_after_seconds
 
 
 def snap(point: LatLon) -> Cell:
@@ -133,7 +157,7 @@ def _fetch_batch(cells: list[Cell]) -> dict[Cell, HourlyForecast]:
             timeout=REQUEST_TIMEOUT_SECONDS,
         )
         if response.status_code == 429:
-            raise WeatherRateLimited("Open-Meteo rate limit reached")
+            raise _open_meteo_rate_limited(response)
         response.raise_for_status()
         data = response.json()
     except (requests.RequestException, ValueError) as exc:
@@ -146,8 +170,162 @@ def _fetch_batch(cells: list[Cell]) -> dict[Cell, HourlyForecast]:
     return {cell: _parse_location(item) for cell, item in zip(cells, items)}
 
 
+def _open_meteo_rate_limited(response: requests.Response) -> WeatherRateLimited:
+    """Build the exception from Open-Meteo's 429 body, which names the exhausted quota."""
+    try:
+        reason = response.json().get("reason", "")
+    except ValueError:
+        reason = ""
+    window = next(
+        (w for w in OPEN_METEO_BLOCK_SECONDS if w in reason.lower()), "minutely"
+    )
+    return WeatherRateLimited(
+        f"Open-Meteo rate limit reached: {reason or 'no reason given'}",
+        retry_after_seconds=OPEN_METEO_BLOCK_SECONDS[window],
+    )
+
+
+# --------------------------------------------------------------------- MET Norway
+
+
+def _interpolate_gaps(values: list[float | None]) -> list[float]:
+    """Fill None entries linearly between known values (and flat at the ends)."""
+    known = [i for i, v in enumerate(values) if v is not None]
+    if not known:
+        return [0.0] * len(values)
+    filled = list(values)
+    for i in range(known[0]):
+        filled[i] = values[known[0]]
+    for a, b in zip(known, known[1:]):
+        for i in range(a + 1, b):
+            filled[i] = values[a] + (values[b] - values[a]) * (i - a) / (b - a)
+    for i in range(known[-1] + 1, len(values)):
+        filled[i] = values[known[-1]]
+    return filled
+
+
+def _parse_met(data: dict) -> HourlyForecast:
+    """Convert a MET Norway locationforecast into the hourly Open-Meteo layout.
+
+    MET Norway gives hourly steps for about 2.5 days and 6-hourly steps after that.
+    Instant values (wind, temperature) are interpolated between steps. Precipitation
+    is given for the period *after* each step, so it is shifted to the hours that end
+    within that period and spread evenly over 6-hour periods.
+    """
+    steps = [
+        (
+            int(datetime.fromisoformat(s["time"].replace("Z", "+00:00")).timestamp()),
+            s["data"],
+        )
+        for s in data["properties"]["timeseries"]
+    ]
+    start = steps[0][0]
+    hours = (steps[-1][0] - start) // HOUR + 1
+    wind: list[float | None] = [None] * hours
+    temp: list[float | None] = [None] * hours
+    precip_mm = [0.0] * hours  # total for the hour ending at each index
+
+    for n, (ts, step) in enumerate(steps):
+        i = (ts - start) // HOUR
+        details = step["instant"]["details"]
+        wind[i] = details.get("wind_speed", 0.0) * MPS_TO_MPH
+        temp[i] = details.get("air_temperature")
+        gap = (steps[n + 1][0] - ts) // HOUR if n + 1 < len(steps) else 1
+        if gap == 1 and "next_1_hours" in step:
+            amounts = [step["next_1_hours"]["details"].get("precipitation_amount", 0.0)]
+        elif "next_6_hours" in step:
+            total = step["next_6_hours"]["details"].get("precipitation_amount", 0.0)
+            amounts = [total / 6] * min(gap, 6)
+        elif "next_1_hours" in step:
+            amounts = [step["next_1_hours"]["details"].get("precipitation_amount", 0.0)]
+        else:
+            amounts = []
+        for k, amount in enumerate(amounts, start=1):
+            if i + k < hours:
+                precip_mm[i + k] = amount
+
+    wind_mph = _interpolate_gaps(wind)
+    temp_c = _interpolate_gaps(temp)
+    rain, snow = [], []
+    for mm, celsius in zip(precip_mm, temp_c):
+        inches = mm / MM_PER_INCH
+        is_snow = celsius <= SNOW_MAX_TEMP_C
+        rain.append(0.0 if is_snow else round(inches, 3))
+        snow.append(round(inches * SNOW_TO_LIQUID_RATIO, 3) if is_snow else 0.0)
+    return HourlyForecast(
+        start=start,
+        wind_mph=[round(w, 1) for w in wind_mph],
+        gust_mph=[round(w, 1) for w in wind_mph],  # no gust data in the compact product
+        rain_in_hr=rain,
+        snow_in_hr=snow,
+    )
+
+
+def _fetch_met(cell: Cell) -> HourlyForecast:
+    url = f"{settings.MET_NORWAY_URL.rstrip('/')}/compact"
+    params = {"lat": f"{cell[0]:.1f}", "lon": f"{cell[1]:.1f}"}
+    for attempt in range(2):
+        try:
+            response = requests.get(
+                url,
+                params=params,
+                headers=default_headers(),
+                timeout=REQUEST_TIMEOUT_SECONDS,
+            )
+        except requests.RequestException as exc:
+            raise WeatherError(f"MET Norway request failed: {exc}") from exc
+        if response.status_code == 429 and attempt == 0:
+            time.sleep(1)
+            continue
+        if response.status_code == 429:
+            raise WeatherRateLimited("MET Norway rate limit reached")
+        try:
+            response.raise_for_status()
+            return _parse_met(response.json())
+        except (requests.RequestException, ValueError, KeyError, IndexError) as exc:
+            raise WeatherError(f"MET Norway response unusable: {exc}") from exc
+    raise WeatherError(
+        "MET Norway request failed"
+    )  # unreachable; keeps type checkers happy
+
+
+# ------------------------------------------------------------------- orchestration
+
+
 def _cache_key(cell: Cell) -> str:
     return f"wx:v1:{cell[0]:.1f}:{cell[1]:.1f}"
+
+
+def _try_open_meteo(batch: list[Cell]) -> dict[Cell, HourlyForecast] | WeatherError:
+    try:
+        return _fetch_batch(batch)
+    except WeatherError as exc:
+        return exc
+
+
+def _fetch(cells: list[Cell]) -> dict[Cell, HourlyForecast]:
+    fetched: dict[Cell, HourlyForecast] = {}
+    fallback: list[Cell] = cells
+    if not cache.get(OPEN_METEO_BLOCK_KEY):
+        batches = [cells[i : i + BATCH_SIZE] for i in range(0, len(cells), BATCH_SIZE)]
+        with ThreadPoolExecutor(max_workers=4) as pool:
+            outcomes = list(pool.map(_try_open_meteo, batches))
+        fallback = []
+        for batch, outcome in zip(batches, outcomes):
+            if isinstance(outcome, WeatherError):
+                logger.warning(
+                    "Open-Meteo failed for %d cells: %s", len(batch), outcome
+                )
+                if isinstance(outcome, WeatherRateLimited):
+                    cache.set(OPEN_METEO_BLOCK_KEY, True, outcome.retry_after_seconds)
+                fallback.extend(batch)
+            else:
+                fetched.update(outcome)
+    if fallback:
+        logger.info("Fetching %d cells from MET Norway", len(fallback))
+        with ThreadPoolExecutor(max_workers=MET_WORKERS) as pool:
+            fetched.update(zip(fallback, pool.map(_fetch_met, fallback)))
+    return fetched
 
 
 def get_forecasts(cells: set[Cell]) -> dict[Cell, HourlyForecast]:
@@ -160,13 +338,7 @@ def get_forecasts(cells: set[Cell]) -> dict[Cell, HourlyForecast]:
 
     missing = sorted(cells - result.keys())
     if missing:
-        batches = [
-            missing[i : i + BATCH_SIZE] for i in range(0, len(missing), BATCH_SIZE)
-        ]
-        with ThreadPoolExecutor(max_workers=4) as pool:
-            fetched: dict[Cell, HourlyForecast] = {}
-            for batch_result in pool.map(_fetch_batch, batches):
-                fetched.update(batch_result)
+        fetched = _fetch(missing)
         cache.set_many(
             {_cache_key(cell): forecast for cell, forecast in fetched.items()},
             CACHE_TTL_SECONDS,

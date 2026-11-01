@@ -25,6 +25,7 @@ The web client lives in the companion `weather-aware-truck-routing-ui` repositor
   - [Valhalla](https://valhalla1.openstreetmap.de): truck routing
   - [OSRM](https://project-osrm.org): fallback routing
   - [Open-Meteo](https://open-meteo.com): hourly forecasts
+  - [MET Norway](https://api.met.no): fallback forecasts
   - [Photon](https://photon.komoot.io): geocoding
 
 ## Getting started
@@ -94,6 +95,7 @@ Besides the database, Redis and admin settings in `.env`, the following variable
 | `OSRM_URL` | `https://router.project-osrm.org` | Fallback router for long trips. |
 | `OPEN_METEO_URL` | `https://api.open-meteo.com` | Use `https://customer-api.open-meteo.com` with a paid plan. |
 | `OPEN_METEO_API_KEY` | *(empty)* | Open-Meteo API key for paid plans. |
+| `MET_NORWAY_URL` | `https://api.met.no/weatherapi/locationforecast/2.0` | Fallback forecast provider. |
 | `PHOTON_URL` | `https://photon.komoot.io` | Geocoder. |
 | `HTTP_USER_AGENT` | `weather-aware-truck-routing/1.0` | Sent to external services, which reject anonymous clients. |
 | `TRIP_PLAN_THROTTLE_RATE` | `20/min` | Per-user rate limit for trip planning. |
@@ -181,6 +183,14 @@ The planning pipeline is in `apps/routing/services/trip.py`.
   reported at the end of its hour, so the hour that *contains* the ETA is used.
 - Lookups are snapped to 0.2° cells, cached in Redis for an hour, and fetched in batches of
   100 locations. This lets the routes and the heatmap share forecasts.
+- **Fallback provider.** Open-Meteo's free quota is counted per IP address, and hosting
+  platforms share outbound IPs between customers. When Open-Meteo refuses a batch (HTTP 429),
+  those cells are fetched from [MET Norway](https://api.met.no) instead, and Open-Meteo is
+  skipped until its quota window resets:
+  - MET Norway reports precipitation as liquid water only. At or below 0.5 °C it is counted as
+    snow at a 10:1 snow-to-water ratio.
+  - It has no gust data in the US, so gusts equal sustained wind.
+  - Its 6-hourly totals beyond about 2.5 days are spread evenly over each hour.
 
 ### 3. Risk model
 
@@ -242,6 +252,7 @@ The test settings use SQLite and an in-memory cache. External services are mocke
 |---|---|
 | `apps/routing/tests/test_risk.py` | Every threshold boundary, the load rules, and the consistency of the heatmap index with the discrete levels |
 | `apps/routing/tests/test_planner.py` | Checkpoint placement and ETAs, forecast hour selection, segment and summary maths, recommendation order (including load weight changing the outcome), trips beyond the forecast range |
+| `apps/routing/tests/test_weather.py` | MET Norway parsing (units, precipitation alignment, 6-hour periods, snow by temperature) and the fallback when Open-Meteo is rate limited |
 | `apps/routing/tests/test_api.py` | The plan endpoint end to end with mocked providers, validation and error responses |
 
 ## Project structure
@@ -269,9 +280,10 @@ docker-compose.yml
 ## Known limitations
 
 - **Public service quotas.** The free Open-Meteo API allows 600 locations per minute and 5,000 per
-  hour, which is roughly 10–20 new long trips per hour; repeated trips are served from cache.
-  Production deployments should use a self-hosted Valhalla and a paid Open-Meteo plan, both
-  configurable through environment variables.
+  hour per IP; repeated trips are served from cache. When the quota is exhausted, plans fall
+  back to MET Norway, which takes longer (about 10–15 s for a 400-mile trip) and estimates snow
+  from temperature. Production deployments should use a self-hosted Valhalla and a paid
+  Open-Meteo plan, both configurable through environment variables.
 - **Drive time only.** ETAs do not include Hours-of-Service breaks or live traffic.
 - **Sustained wind.** Risk is based on sustained wind speed. Gusts are returned for information only.
 - **OSRM fallback.** Long trips routed by OSRM use the car network with capped speeds and do not

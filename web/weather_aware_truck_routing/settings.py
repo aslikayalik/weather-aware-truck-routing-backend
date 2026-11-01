@@ -185,6 +185,8 @@ OSRM_URL = os.environ.get("OSRM_URL", "https://router.project-osrm.org")
 # Paid Open-Meteo plans use https://customer-api.open-meteo.com together with an API key
 OPEN_METEO_URL = os.environ.get("OPEN_METEO_URL", "https://api.open-meteo.com")
 OPEN_METEO_API_KEY = os.environ.get("OPEN_METEO_API_KEY", "")
+# Fallback forecast provider when Open-Meteo refuses requests (no API key)
+MET_NORWAY_URL = os.environ.get("MET_NORWAY_URL", "https://api.met.no/weatherapi/locationforecast/2.0")
 PHOTON_URL = os.environ.get("PHOTON_URL", "https://photon.komoot.io")
 HTTP_USER_AGENT = os.environ.get("HTTP_USER_AGENT", "weather-aware-truck-routing/1.0")
 
