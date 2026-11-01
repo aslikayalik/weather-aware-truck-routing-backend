@@ -41,7 +41,8 @@ OPEN_METEO_BLOCK_KEY = "wx:open-meteo:blocked"
 OPEN_METEO_BLOCK_SECONDS = {"minutely": 60, "hourly": 60 * 60, "daily": 60 * 60}
 
 # MET Norway asks clients to stay below 20 requests per second.
-MET_WORKERS = 8
+MET_WORKERS = 10
+MET_TIMEOUT_SECONDS = 15
 MPS_TO_MPH = 2.23694
 MM_PER_INCH = 25.4
 # MET Norway reports precipitation as liquid water and has no separate snowfall
@@ -270,7 +271,7 @@ def _fetch_met(cell: Cell) -> HourlyForecast:
                 url,
                 params=params,
                 headers=default_headers(),
-                timeout=REQUEST_TIMEOUT_SECONDS,
+                timeout=MET_TIMEOUT_SECONDS,
             )
         except requests.RequestException as exc:
             raise WeatherError(f"MET Norway request failed: {exc}") from exc

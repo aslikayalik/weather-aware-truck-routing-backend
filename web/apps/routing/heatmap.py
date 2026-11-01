@@ -17,7 +17,7 @@ from apps.routing.services.weather import CELL_DEG, HOUR, Cell, HourlyForecast
 
 HEATMAP_HOURS = 48
 CORRIDOR_MILES = 40.0
-MAX_POINTS = 200
+MAX_POINTS = 150
 SAMPLE_EVERY_MILES = 5.0
 
 

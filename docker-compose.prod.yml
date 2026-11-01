@@ -5,7 +5,7 @@
 # proxy (e.g. Caddy) terminates HTTPS and forwards to 127.0.0.1:8080.
 services:
   web:
-    command: gunicorn weather_aware_truck_routing.wsgi:application --bind 0.0.0.0:8000 --workers 3 --timeout 120
+    command: gunicorn weather_aware_truck_routing.wsgi:application --bind 0.0.0.0:8000 --workers 3 --worker-class gthread --threads 4 --timeout 120
     ports: !reset []
 
   postgres:
