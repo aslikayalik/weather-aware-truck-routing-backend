@@ -114,9 +114,9 @@ class UserViewSet(
             role = serializer.validated_data.get('role')
             if role is not None:
                 requester_rank = getattr(getattr(request.user, 'role', None), 'rank', 0)
-                if requester_rank <= getattr(role, 'rank', 0):
+                if requester_rank < getattr(role, 'rank', 0):
                     return Response(
-                        {"detail": "You are not allowed to perform this action. You can only assign roles ranked below your own."},
+                        {"detail": "You are not allowed to perform this action. You can only assign roles ranked at or below your own."},
                         status=status.HTTP_403_FORBIDDEN,
                     )
             serializer.save()
@@ -135,9 +135,9 @@ class UserViewSet(
 
         if instance.pk != request.user.pk:
             target_rank = getattr(getattr(instance, 'role', None), 'rank', 0)
-            if requester_rank <= target_rank:
+            if requester_rank < target_rank:
                 return Response(
-                    {"detail": "You are not allowed to perform this action. You can only manage users ranked below you."},
+                    {"detail": "You are not allowed to perform this action. You can only manage users ranked at or below you."},
                     status=status.HTTP_403_FORBIDDEN,
                 )
 
@@ -145,9 +145,9 @@ class UserViewSet(
         if serializer.is_valid():
             new_role = serializer.validated_data.get('role')
             if new_role is not None and instance.pk != request.user.pk:
-                if requester_rank <= getattr(new_role, 'rank', 0):
+                if requester_rank < getattr(new_role, 'rank', 0):
                     return Response(
-                        {"detail": "You are not allowed to perform this action. You can only assign roles ranked below your own."},
+                        {"detail": "You are not allowed to perform this action. You can only assign roles ranked at or below your own."},
                         status=status.HTTP_403_FORBIDDEN,
                     )
             serializer.save()
