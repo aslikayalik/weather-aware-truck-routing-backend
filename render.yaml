@@ -101,10 +101,10 @@ services:
     routes:
       - type: rewrite
         source: /api/*
-        destination: https://weather-aware-truck-routing-api.onrender.com/api/*
+        destination: https://weather-aware-truck-routing-api-a72f.onrender.com/api/*
       - type: rewrite
         source: /captcha/*
-        destination: https://weather-aware-truck-routing-api.onrender.com/captcha/*
+        destination: https://weather-aware-truck-routing-api-a72f.onrender.com/captcha/*
       - type: rewrite
         source: /*
         destination: /index.html
