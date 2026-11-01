@@ -53,6 +53,26 @@ On first start, the one-shot `migrate` service applies migrations and creates a 
 | Nginx (UI + API) | `http://localhost:${NGINX_PORT:-8080}` |
 | PostgreSQL | `localhost:5450` |
 
+### Production
+
+`docker-compose.prod.yml` runs Django under gunicorn and closes the backend and PostgreSQL ports.
+It publishes nginx on `127.0.0.1:8080` only, for a host-level reverse proxy such as Caddy that
+terminates HTTPS. Build the web client into `web/static` first; nginx serves it from there.
+
+```sh
+docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d --build
+```
+
+In `.env`, set `DEBUG=false`, `ALLOWED_HOSTS` and `CSRF_TRUSTED_ORIGINS` to your domain,
+`HTTPS_PROXY_HEADER=true` and `FORWARDED_PROTO=https`.
+
+### Deploy to Render
+
+`render.yaml` is a Render Blueprint that creates the API (Docker), PostgreSQL, a Key Value
+(Redis) instance and the web client as a static site. In the Render dashboard choose
+**New → Blueprint**, select this repository, and enter `ADMIN_EMAIL` / `ADMIN_PASSWORD` when
+prompted. The static site proxies `/api` and `/captcha` to the API, so both share one origin.
+
 ### Run locally
 
 ```sh

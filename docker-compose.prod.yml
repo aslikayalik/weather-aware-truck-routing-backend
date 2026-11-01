@@ -1,0 +1,16 @@
+# Production overrides. Usage:
+#   docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d --build
+#
+# Only nginx is reachable, and only from the host itself; a host-level reverse
+# proxy (e.g. Caddy) terminates HTTPS and forwards to 127.0.0.1:8080.
+services:
+  web:
+    command: gunicorn weather_aware_truck_routing.wsgi:application --bind 0.0.0.0:8000 --workers 3 --timeout 120
+    ports: !reset []
+
+  postgres:
+    ports: !reset []
+
+  nginx:
+    ports: !override
+      - '127.0.0.1:8080:80'

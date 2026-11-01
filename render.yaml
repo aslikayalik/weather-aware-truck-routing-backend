@@ -1,0 +1,110 @@
+# Render Blueprint: API, PostgreSQL, Key Value (Redis) and the web client.
+# Render dashboard -> New -> Blueprint -> select this repository.
+#
+# The web client proxies /api and /captcha to the API, so both are served from
+# one origin. If Render gives the API a different URL than the one below
+# (e.g. the name is taken), update the two rewrite destinations.
+
+databases:
+  - name: weather-aware-truck-routing-db
+    plan: free
+    region: oregon
+    databaseName: weather_aware_truck_routing
+    user: weather_aware_truck_routing
+
+services:
+  - type: keyvalue
+    name: weather-aware-truck-routing-redis
+    plan: free
+    region: oregon
+    maxmemoryPolicy: allkeys-lru
+    ipAllowList: [] # internal connections only
+
+  - type: web
+    name: weather-aware-truck-routing-api
+    runtime: docker
+    plan: free
+    region: oregon
+    dockerfilePath: ./web/Dockerfile
+    dockerContext: ./web
+    # No dockerCommand: the image's entrypoint runs migrations, then its default CMD starts gunicorn on $PORT
+    healthCheckPath: /api/v1/health/
+    envVars:
+      # Applies migrations and creates the admin user on every start (both are idempotent)
+      - key: RUN_MIGRATE
+        value: "true"
+      - key: SECRET_KEY
+        generateValue: true
+      - key: DEBUG
+        value: "false"
+      # "*" so Render's internal health checks are accepted whatever Host header they send
+      - key: ALLOWED_HOSTS
+        value: "*"
+      - key: CSRF_TRUSTED_ORIGINS
+        value: https://*.onrender.com
+      # The API uses bearer tokens, not cookies
+      - key: CORS_ALLOW_ALL_ORIGINS
+        value: "true"
+      - key: HTTPS_PROXY_HEADER
+        value: "true"
+      - key: TIME_ZONE
+        value: UTC
+      - key: ADMIN_EMAIL
+        sync: false
+      - key: ADMIN_PASSWORD
+        sync: false
+      - key: DB_NAME
+        fromDatabase:
+          name: weather-aware-truck-routing-db
+          property: database
+      - key: DB_USERNAME
+        fromDatabase:
+          name: weather-aware-truck-routing-db
+          property: user
+      - key: DB_PASSWORD
+        fromDatabase:
+          name: weather-aware-truck-routing-db
+          property: password
+      - key: DB_HOST
+        fromDatabase:
+          name: weather-aware-truck-routing-db
+          property: host
+      - key: DB_PORT
+        fromDatabase:
+          name: weather-aware-truck-routing-db
+          property: port
+      - key: REDIS_HOST
+        fromService:
+          type: keyvalue
+          name: weather-aware-truck-routing-redis
+          property: host
+      - key: REDIS_PORT
+        fromService:
+          type: keyvalue
+          name: weather-aware-truck-routing-redis
+          property: port
+
+  - type: web
+    name: weather-aware-truck-routing
+    runtime: static
+    repo: https://github.com/aslikayalik/weather-aware-truck-routing-ui
+    branch: main
+    buildCommand: yarn install --frozen-lockfile && yarn build
+    staticPublishPath: ./target/classes/static
+    envVars:
+      - key: NODE_VERSION
+        value: 20.11.0
+      - key: REACT_APP_API_URL
+        value: /api/v1/
+      - key: REACT_APP_NAME
+        value: Weather-Aware Truck Routing
+    routes:
+      - type: rewrite
+        source: /api/*
+        destination: https://weather-aware-truck-routing-api.onrender.com/api/*
+      - type: rewrite
+        source: /captcha/*
+        destination: https://weather-aware-truck-routing-api.onrender.com/captcha/*
+      - type: rewrite
+        source: /*
+        destination: /index.html
